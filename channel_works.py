@@ -11,11 +11,17 @@ ChannelWorks 統合ライブラリ (ログイン + 受信 + 送信 を 1 クラ�
         # channel_slug は省略可 (省略時は room_id で channel_id を自動取得)
         # channel_id="...", manager_id="...",   # 直接指定してもよい
         group_id="574628",
+        group_ids=["111111", "222222"],   # 追加で受信したい部屋 (省略可)
         on_push=lambda wrapper: print((wrapper.get("entity") or {}).get("plainText")),
     )
     cw.start()                      # login + 自動touch + WebSocket受信 をまとめて開始
     cw.send("こんにちは")            # 送信
     print(cw.get_latest())          # 最新メッセージ取得
+
+    cw.wait_message()                    # 全部屋のメッセージ (届くまで無期限に待つ)
+    cw.wait_message(group_id="574628")   # その部屋のメッセージだけ
+    cw.join_group("333333")              # 起動後に受信する部屋を追加
+
     cw.wait()                       # Ctrl+C まで待機
     cw.stop()
 
@@ -28,6 +34,7 @@ log_level:
 """
 
 import json
+import queue
 import threading
 import time
 import uuid
@@ -191,7 +198,9 @@ class ChannelWorks:
         channel_id: Optional[str] = None,
         manager_id: Optional[str] = None,
         group_id: str = DEFAULT_GROUP_ID,
+        group_ids: Optional[list] = None,
         on_push: Optional[Callable[[Dict[str, Any]], None]] = None,
+        show_incoming: bool = True,
         log_level: int = LOG_ERROR,
         touch_interval: float = DEFAULT_TOUCH_INTERVAL,
         timeout: float = 30.0,
@@ -212,6 +221,7 @@ class ChannelWorks:
         self.manager_id = str(manager_id) if manager_id is not None else None
         self.group_id = str(group_id)
         self.on_push = on_push
+        self.show_incoming = show_incoming
         self.log_level = log_level
         self.touch_interval = touch_interval
         self.timeout = timeout
@@ -244,6 +254,21 @@ class ChannelWorks:
         self._account_thread: Optional[threading.Thread] = None
 
         self._logged_in = False
+
+        # 受信したメッセージの保存先
+        self.last_message: Optional[str] = None            # 最後に受信した本文
+        self.last_wrapper: Optional[Dict[str, Any]] = None  # 最後に受信した生データ
+        self._inbox: "queue.Queue[str]" = queue.Queue(maxsize=1000)  # 全部屋共通
+
+        # join する部屋 (group_id + group_ids)
+        self._join_groups = []
+        for g in [self.group_id] + [str(x) for x in (group_ids or [])]:
+            if g not in self._join_groups:
+                self._join_groups.append(g)
+        self._pending_joins: "queue.Queue[str]" = queue.Queue()  # 起動後に追加された join
+
+        # 部屋ごとの受信キュー
+        self._room_inboxes: Dict[str, "queue.Queue[str]"] = {}
 
     @property
     def group_path(self) -> str:
@@ -557,7 +582,9 @@ class ChannelWorks:
             "customPayload": None,
         }
         resp = self._api_request("POST", self._messages_url(group_id), json=payload)
-        if not resp.ok:
+        if resp.ok:
+            print(f'送信成功 : "{text}"', flush=True)
+        else:
             self._log_error("SEND", f"送信失敗 status={resp.status_code} body={resp.text[:300]}")
         return resp
 
@@ -592,47 +619,73 @@ class ChannelWorks:
             self._resolve_ids()
 
     def _resolve_ids(self) -> None:
+        """manager_id / channel_id を GET /desk/channels/{x} から取得する。
+
+        {x} の候補を channel_id → room_id → channel_slug の順に試し、
+        成功した最初の応答から不足している ID を取り出す。
+        全部失敗した場合は、各候補のステータスとサーバー応答を含めて例外にする。
+        """
+        candidates = []
+        for c in (self.channel_id, self.room_id, self.channel_slug):
+            if c and str(c) not in candidates:
+                candidates.append(str(c))
+
+        data = None
+        used = None
+        errors = []
+        for cand in candidates:
+            url = f"{API_BASE}/{cand}"
+            self._log_debug("HTTP", f"GET {url}")
+            resp = self._api_request("GET", url)
+            self._log_debug("HTTP", f"-> status={resp.status_code} ({url})")
+            if not resp.ok:
+                errors.append(f"  {url} -> status={resp.status_code} body={resp.text[:300]}")
+                continue
+            try:
+                data = resp.json()
+            except ValueError:
+                errors.append(f"  {url} -> JSON ではない応答 body={resp.text[:300]}")
+                continue
+            used = cand
+            self._log_block_debug("HTTP-BODY", url, json.dumps(data, ensure_ascii=False))
+            break
+
+        if data is None:
+            raise RuntimeError(
+                "チャンネル情報を取得できませんでした。試した候補:\n"
+                + "\n".join(errors)
+                + "\nブラウザの開発者ツール(ネットワーク)で "
+                "api.channel.works/desk/channels/数字/... の数字を探し、"
+                "channel_id= に指定してください。"
+            )
+
         if self.manager_id is None:
-            room_url = f"{API_BASE}/{self.room_id}"
-            room_json = self._http_get_json(room_url)
-            manager_id = _get_nested(room_json, "manager", "id")
+            manager_id = _get_nested(data, "manager", "id")
             if manager_id is None:
-                manager = _find_first_key(room_json, "manager")
+                manager = _find_first_key(data, "manager")
                 if isinstance(manager, dict):
                     manager_id = manager.get("id")
             if manager_id is None:
-                raise RuntimeError(f"{room_url} の JSON から manager.id を取得できませんでした。")
+                raise RuntimeError(
+                    f"{API_BASE}/{used} の JSON から manager.id を取得できませんでした。"
+                    "manager_id= を直接指定してください。"
+                )
             self.manager_id = str(manager_id)
 
         if self.channel_id is None:
-            # channel_slug 未指定なら room_id で代用する
-            slug = self.channel_slug or self.room_id
-            lookup_url = f"{API_BASE}/{slug}"
-            channel_json = self._http_get_json(lookup_url)
-            channel_id = _get_nested(channel_json, "channel", "id")
+            channel_id = _get_nested(data, "channel", "id")
             if channel_id is None:
-                channel_id = _find_first_key(channel_json, "id")
+                channel_id = _find_first_key(data, "id")
             if channel_id is None:
                 raise RuntimeError(
-                    f"{lookup_url} の JSON から channel.id を取得できませんでした。"
-                    "channel_slug か channel_id を直接指定してください。"
+                    f"{API_BASE}/{used} の JSON から channel.id を取得できませんでした。"
+                    "channel_id= を直接指定してください。"
                 )
             self.channel_id = str(channel_id)
-            self._log_debug("HTTP", f"channel_id={self.channel_id} (slug={slug})")
 
-    def _http_get_json(self, url: str) -> Any:
-        self._log_debug("HTTP", f"GET {url}")
-        resp = self._api_request("GET", url)
-        self._log_debug("HTTP", f"-> status={resp.status_code} ({url})")
-        resp.raise_for_status()
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"JSON を取得できませんでした: {url}\nstatus={resp.status_code}\nbody={resp.text[:500]}"
-            ) from exc
-        self._log_block_debug("HTTP-BODY", url, json.dumps(data, ensure_ascii=False))
-        return data
+        self._log_debug(
+            "HTTP", f"解決: channel_id={self.channel_id} manager_id={self.manager_id} (via {used})"
+        )
 
     # ==================================================================
     # 受信 (WebSocket)
@@ -649,7 +702,6 @@ class ChannelWorks:
             self.start_auto_touch()
             self._ensure_ids()
 
-            tokens = self.get_tokens()
             self._stop_event.clear()
 
             self._channel_thread = threading.Thread(
@@ -661,6 +713,59 @@ class ChannelWorks:
             self._channel_thread.start()
             self._account_thread.start()
             self._log_debug("MAIN", f"起動: manager_id={self.manager_id} channel_id={self.channel_id}")
+
+    def join_group(self, group_id: str) -> None:
+        """起動後に部屋を追加で受信対象にする (起動前に呼んでもよい)。"""
+        gid = str(group_id)
+        with self._lock:
+            if gid in self._join_groups:
+                return
+            self._join_groups.append(gid)
+        if self._is_running():
+            self._pending_joins.put(gid)
+
+    def wait_message(
+        self, timeout: Optional[float] = None, group_id: Optional[str] = None
+    ) -> Optional[str]:
+        """次のメッセージが届くまで待って本文を返す。
+
+        group_id=None  : 受信中の全部屋のメッセージ
+        group_id="123" : その部屋のメッセージだけ
+        timeout=None   : 届くまで無期限に待つ (タイムアウトしない)
+        timeout=数値   : その秒数で来なければ None
+
+        内部では短い間隔でポーリングするため Ctrl+C で中断でき、
+        受信スレッドが終了している場合は例外で知らせる。
+        """
+        if group_id is None:
+            q = self._inbox
+        else:
+            gid = str(group_id)
+            with self._lock:
+                q = self._room_inboxes.setdefault(gid, queue.Queue(maxsize=1000))
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            # 受信スレッドが死んでいたら、永久に待たずに知らせる
+            if not self._is_running():
+                # 死ぬ直前に届いた分があれば先に返す
+                try:
+                    return q.get_nowait()
+                except queue.Empty:
+                    raise RuntimeError("受信スレッドが停止しています。start() で再開してください。")
+
+            if deadline is None:
+                wait_for = 0.5
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                wait_for = min(0.5, remaining)
+
+            try:
+                return q.get(timeout=wait_for)
+            except queue.Empty:
+                continue
 
     def wait(self, poll_interval: float = 0.5) -> None:
         """受信ワーカーが終了するまでブロックする。"""
@@ -762,8 +867,13 @@ class ChannelWorks:
         return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
     def _send_join_group(self, ws: _LoggingWS) -> None:
-        self._log_debug("SOCKET", f"join 送信: {self.group_path}")
-        ws.send("42/desk/channel," + self._compact(["join", self.group_path]))
+        """join_groups に入っている全部屋に join する。"""
+        with self._lock:
+            groups = list(self._join_groups)
+        for gid in groups:
+            path = f"/groups/{gid}"
+            self._log_debug("SOCKET", f"join 送信: {path}")
+            ws.send("42/desk/channel," + self._compact(["join", path]))
 
     def _send_channel_connect(self, ws: _LoggingWS, session_token: str) -> None:
         self._log_debug("SOCKET", f"channel connect 送信: channelId={self.channel_id}")
@@ -793,6 +903,27 @@ class ChannelWorks:
         ws.send("3")
 
     # --- push 処理 ----------------------------------------------------
+    def _extract_group_id(self, wrapper: Dict[str, Any]) -> Optional[str]:
+        """push の中身から部屋IDを推定する。取れなければ None。"""
+        entity = wrapper.get("entity") or {}
+        for key in ("chatId", "groupId"):
+            v = entity.get(key)
+            if v is not None:
+                return str(v).split("/")[-1]
+        v = _find_first_key(wrapper, "groupId")
+        if v is not None:
+            return str(v).split("/")[-1]
+        return None
+
+    @staticmethod
+    def _put_limited(q: "queue.Queue[str]", item: str) -> None:
+        if q.full():  # 溜まりすぎたら古いものを捨てる
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+        q.put_nowait(item)
+
     def _handle_push(self, payload: list) -> None:
         if len(payload) < 2:
             return
@@ -806,6 +937,27 @@ class ChannelWorks:
                 f"type={wrapper.get('type')} event={wrapper.get('event')}",
                 json.dumps(_format_json_with_timestamps(wrapper), ensure_ascii=False),
             )
+
+        gid = self._extract_group_id(wrapper)
+        with self._lock:
+            joined = set(self._join_groups)
+
+        # join していない部屋の push は無視 (on_push も呼ばない)
+        if gid is not None and gid not in joined:
+            self._log_debug("PUSH", f"対象外の部屋 {gid} の push を無視")
+            return
+
+        text = (wrapper.get("entity") or {}).get("plainText")
+        if text:
+            self.last_message = text
+            self.last_wrapper = wrapper
+            self._put_limited(self._inbox, text)  # 全部屋共通
+            if gid is not None:                    # 部屋が特定できたときだけ部屋別へ
+                with self._lock:
+                    room_q = self._room_inboxes.setdefault(gid, queue.Queue(maxsize=1000))
+                self._put_limited(room_q, text)
+            if self.show_incoming:
+                print(f'受信 [{gid or "?"}] : "{text}"', flush=True)
 
         if self.on_push is not None:
             try:
@@ -830,6 +982,15 @@ class ChannelWorks:
         try:
             while not self._stop_event.is_set():
                 now = time.monotonic()
+
+                # 起動後に join_group() された部屋を join
+                while True:
+                    try:
+                        new_gid = self._pending_joins.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._log_debug("SOCKET", f"join 送信: /groups/{new_gid}")
+                    ws.send("42/desk/channel," + self._compact(["join", f"/groups/{new_gid}"]))
 
                 if ready_received:
                     if heartbeat_phase == "waiting":
@@ -963,7 +1124,6 @@ if __name__ == "__main__":
         text = (wrapper.get("entity") or {}).get("plainText")
         if not text or text.startswith(BOT_MARK):
             return
-        print("受信:", text)
         if text.strip() == "!ping":
             cw.send(BOT_MARK + "pong")
 
