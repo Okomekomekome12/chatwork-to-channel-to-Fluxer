@@ -13,8 +13,10 @@
     admin      管理者を決める
     member     メンバーを決める
     member_remove メンバーを削除する
-    get_new_messages 最新のメッセージを取得
+    get_new_messages 最新のメッセージを取得(一度取得したメッセージは再度返さない)
+                     msg = cw.get_new_messages → msg["body"] / msg["account_name"]
     get_message_link 最新のメッセージのリンクを取得
+    get_user_name アカウントIDからユーザー名を取得
     create_task タスクを作成する
     delete_task タスクを削除する
     webhook_get_message()  webhookからメッセージ本文を取得
@@ -66,7 +68,22 @@ def webhook_verify_signature(body_bytes: bytes, signature_header: str, secret_to
     ).decode()
     return hmac.compare_digest(expected, signature_header)
 
+class Message(dict):
+    """get_new_messages が返すメッセージ(dictとして使える)。
+    存在しないキーは KeyError ではなく None を返す。
+    cw.get_new_messages() と括弧付きで呼んでも動く(新着がある場合)。
+    """
+    def __missing__(self, key):
+        return None
+
+    def __call__(self):
+        return self
+
+
 class setup:
+    # ルームごとに「最後に取得したメッセージID」を保持する(setupを作り直しても共有される)
+    _last_seen_message_ids = {}
+
     def __init__(self, room_id, api_token):
         self.room_id = room_id
         self.api_token = api_token
@@ -214,21 +231,51 @@ class setup:
         }
         response = requests.put(url, data=payload, headers=headers)
         print(response.text)
+    @property
     def get_new_messages(self):
+        """最新のメッセージを返す(括弧なしで使える)。
+
+            msg = cw.get_new_messages
+            msg["body"]          本文
+            msg["account_name"]  送信者名
+            msg["account_id"]    送信者のアカウントID
+            msg["message_id"]    メッセージID
+
+        既に一度取得したメッセージ・メッセージが無い場合は、
+        表示せず None を返す(if msg: で判定してから使うこと)。
+        注意: アクセスするたびに「取得済み」になるので、
+        msg に一度入れてから msg["body"] などを使うこと。
+        """
         url = f"https://api.chatwork.com/v2/rooms/{self.room_id}/messages"
         headers = {"x-chatworktoken": self.api_token}
         params = {"force": 1}
 
         response = requests.get(url, headers=headers, params=params)
+
+        # メッセージが無い場合は 204 (本文なし) が返る
+        if response.status_code != 200 or not response.text.strip():
+            return None
+
         messages = response.json()
+        if not messages:
+            return None
 
         # 最新のメッセージを取得(messages[-1]にすることで最新100件のところ最新1件のみ取得)
         latest = messages[-1]
-        print(f"送信者: {latest['account']['name']}")
-        print(f"メッセージ: {latest['body']}")
-        if not messages:
-            print("error no messages")
-        return latest
+        message_id = str(latest["message_id"])
+
+        # 既に取得済みのメッセージなら何も表示せず None を返す
+        if self._last_seen_message_ids.get(str(self.room_id)) == message_id:
+            return None
+
+        # 新しいメッセージなので記録して表示
+        self._last_seen_message_ids[str(self.room_id)] = message_id
+        msg = Message(latest)
+        msg["account_name"] = latest["account"]["name"]
+        msg["account_id"] = latest["account"]["account_id"]
+        print(f"送信者: {msg['account_name']}")
+        print(f"メッセージ: {msg['body']}")
+        return msg
     def get_message_link(self):
         url = f"https://api.chatwork.com/v2/rooms/{self.room_id}/messages"
         headers = {"x-chatworktoken": self.api_token}
@@ -346,6 +393,22 @@ class setup:
                 return member["role"] == "admin"
 
         return False 
+    def get_user_name(self, account_id):
+        """指定した account_id のユーザー名を返す(ルームのメンバーから検索)。
+        見つからない場合・取得失敗時は None を返す。
+        """
+        url = f"https://api.chatwork.com/v2/rooms/{self.room_id}/members"
+        headers = {"x-chatworktoken": self.api_token}
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return None
+
+        for member in response.json():
+            if str(member["account_id"]) == str(account_id):
+                return member["name"]
+
+        return None
 
 def auto_accept_contacts(api_token):
     """コンタクト申請を全て自動承認する"""

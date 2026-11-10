@@ -22,6 +22,14 @@ ChannelWorks 統合ライブラリ (ログイン + 受信 + 送信 を 1 クラ�
     cw.wait_message(group_id="574628")   # その部屋のメッセージだけ
     cw.join_group("333333")              # 起動後に受信する部屋を追加
 
+    # --- 送信者の名前 ---
+    cw.last_sender                       # 最後に受信したメッセージの送信者名
+    cw.get_sender(wrapper)               # push の wrapper から送信者名を取得
+    cw.get_sender_info(wrapper)          # {"name":..., "id":..., "type":...}
+    msg = cw.wait_message(with_sender=True)
+    # -> {"text": "...", "sender": "太郎", "sender_id": "...",
+    #     "sender_type": "user", "group_id": "574628"}
+
     cw.wait()                       # Ctrl+C まで待機
     cw.stop()
 
@@ -142,6 +150,55 @@ def _parse_socketio_event(packet: str) -> Tuple[Optional[str], Optional[list]]:
     return namespace, payload
 
 
+# 人物オブジェクトから名前を取り出すときに試すキー (優先順)
+_NAME_KEYS = ("name", "displayName", "nickname", "senderName", "authorName", "userName", "managerName")
+
+
+def _pick_name(obj: Any) -> Optional[str]:
+    """dict から名前らしき文字列を取り出す。"""
+    if not isinstance(obj, dict):
+        return None
+    for k in _NAME_KEYS:
+        v = obj.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    profile = obj.get("profile")
+    if isinstance(profile, dict):
+        for k in _NAME_KEYS:
+            v = profile.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _collect_persons(node: Any, out: Dict[str, Tuple[str, Optional[str]]], type_hint: Optional[str] = None) -> None:
+    """refers など任意の構造から {id: (name, type)} を再帰的に集める。
+
+    - [{"id": "..", "name": ".."}, ...] 形式のリスト
+    - {"<id>": {"name": ".."}, ...} 形式の辞書
+    のどちらにも対応する。
+    """
+    if isinstance(node, list):
+        for item in node:
+            _collect_persons(item, out, type_hint)
+    elif isinstance(node, dict):
+        pid = node.get("id")
+        name = _pick_name(node)
+        if pid is not None and name:
+            out[str(pid)] = (name, type_hint)
+        for k, v in node.items():
+            if isinstance(v, (dict, list)):
+                hint = type_hint
+                if isinstance(k, str) and k.lower() in (
+                    "user", "users", "manager", "managers", "bot", "bots", "member", "members", "person", "persons"
+                ):
+                    hint = k.lower().rstrip("s")
+                _collect_persons(v, out, hint)
+                # {"<id>": {...name...}} 形式
+                if pid is None and isinstance(v, dict) and k and _pick_name(v) and "id" not in v:
+                    out.setdefault(str(k), (_pick_name(v), type_hint))
+
+
 class _LoggingWS:
     """WebSocket の送受信をデバッグログに出すだけの薄いラッパ。"""
 
@@ -257,8 +314,15 @@ class ChannelWorks:
 
         # 受信したメッセージの保存先
         self.last_message: Optional[str] = None            # 最後に受信した本文
+        self.last_sender: Optional[str] = None             # 最後に受信した送信者名
+        self.last_sender_id: Optional[str] = None          # 最後に受信した送信者ID
+        self.last_sender_type: Optional[str] = None        # 最後に受信した送信者種別 (user/manager/bot 等)
         self.last_wrapper: Optional[Dict[str, Any]] = None  # 最後に受信した生データ
-        self._inbox: "queue.Queue[str]" = queue.Queue(maxsize=1000)  # 全部屋共通
+        # キューの中身は {"text","sender","sender_id","sender_type","group_id"} の dict
+        self._inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=1000)  # 全部屋共通
+
+        # 送信者ID -> (名前, 種別) のキャッシュ (push の refers 等から学習)
+        self._person_cache: Dict[str, Tuple[str, Optional[str]]] = {}
 
         # join する部屋 (group_id + group_ids)
         self._join_groups = []
@@ -268,7 +332,7 @@ class ChannelWorks:
         self._pending_joins: "queue.Queue[str]" = queue.Queue()  # 起動後に追加された join
 
         # 部屋ごとの受信キュー
-        self._room_inboxes: Dict[str, "queue.Queue[str]"] = {}
+        self._room_inboxes: Dict[str, "queue.Queue[Dict[str, Any]]"] = {}
 
     @property
     def group_path(self) -> str:
@@ -596,7 +660,10 @@ class ChannelWorks:
         if not resp.ok:
             self._log_error("API", f"メッセージ取得失敗 status={resp.status_code} body={resp.text[:300]}")
             return None
-        return resp.json()
+        data = resp.json()
+        # REST 応答の refers からも名前を学習しておく
+        self._learn_persons(data)
+        return data
 
     def get_latest(self, group_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         data = self.get_messages(limit=1, group_id=group_id)
@@ -604,6 +671,90 @@ class ChannelWorks:
             return None
         messages = data.get("messages") or []
         return messages[0] if messages else None
+
+    def get_latest_sender(self, group_id: Optional[str] = None) -> Optional[str]:
+        """REST で取得した最新メッセージの送信者名を返す。"""
+        data = self.get_messages(limit=1, group_id=group_id)
+        if not data:
+            return None
+        messages = data.get("messages") or []
+        if not messages:
+            return None
+        info = self.get_sender_info({"entity": messages[0], "refers": data.get("refers")})
+        return info["name"]
+
+    # ==================================================================
+    # 送信者の名前
+    # ==================================================================
+    def _learn_persons(self, data: Any) -> None:
+        """データ中の人物情報 ({id, name}) を拾ってキャッシュする。"""
+        found: Dict[str, Tuple[str, Optional[str]]] = {}
+        try:
+            _collect_persons(data, found)
+        except Exception as exc:
+            self._log_debug("SENDER", f"人物情報の収集で例外: {exc!r}")
+            return
+        if found:
+            with self._lock:
+                self._person_cache.update(found)
+
+    def get_sender_info(self, wrapper: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """push の wrapper (または message dict) から送信者情報を取り出す。
+
+        戻り値: {"name": 名前 or "不明", "id": 送信者ID, "type": user/manager/bot 等}
+        名前は次の順で探す:
+          1. entity 自身に入っている person / sender / author などの名前
+          2. wrapper["refers"] など同梱された人物リストから personId で検索
+          3. 過去に学習したキャッシュ
+          4. 見つからなければ ID、それも無ければ "不明"
+        """
+        if not isinstance(wrapper, dict):
+            return {"name": "不明", "id": None, "type": None}
+
+        entity = wrapper.get("entity") if isinstance(wrapper.get("entity"), dict) else wrapper
+
+        person_type = entity.get("personType")
+        person_id = entity.get("personId")
+        if person_id is None:
+            for key in ("senderId", "authorId", "userId", "managerId"):
+                if entity.get(key) is not None:
+                    person_id = entity.get(key)
+                    break
+        person_id = str(person_id) if person_id is not None else None
+
+        # 受け取った全データから名前を学習 (refers 等)
+        self._learn_persons(wrapper)
+
+        name: Optional[str] = None
+
+        # 1. entity 内に直接入っている場合
+        for key in ("person", "sender", "author", "user", "manager", "bot", "member"):
+            name = _pick_name(entity.get(key))
+            if name:
+                break
+        if not name:
+            name = _pick_name({k: entity.get(k) for k in ("senderName", "authorName", "userName", "managerName")})
+
+        # 2/3. personId からキャッシュ (refers 由来) を引く
+        if not name and person_id is not None:
+            with self._lock:
+                cached = self._person_cache.get(person_id)
+            if cached:
+                name = cached[0]
+                if not person_type:
+                    person_type = cached[1]
+
+        if not name:
+            self._log_debug(
+                "SENDER", f"送信者名を特定できませんでした personType={person_type} personId={person_id}"
+            )
+            name = person_id or "不明"
+
+        return {"name": name, "id": person_id, "type": person_type}
+
+    def get_sender(self, wrapper: Dict[str, Any]) -> str:
+        """push の wrapper から送信者名だけを返す。"""
+        return self.get_sender_info(wrapper)["name"] or "不明"
 
     # ==================================================================
     # ID 解決
@@ -725,14 +876,19 @@ class ChannelWorks:
             self._pending_joins.put(gid)
 
     def wait_message(
-        self, timeout: Optional[float] = None, group_id: Optional[str] = None
-    ) -> Optional[str]:
+        self,
+        timeout: Optional[float] = None,
+        group_id: Optional[str] = None,
+        with_sender: bool = False,
+    ) -> Any:
         """次のメッセージが届くまで待って本文を返す。
 
         group_id=None  : 受信中の全部屋のメッセージ
         group_id="123" : その部屋のメッセージだけ
         timeout=None   : 届くまで無期限に待つ (タイムアウトしない)
         timeout=数値   : その秒数で来なければ None
+        with_sender=True : 本文だけでなく送信者名なども含む dict を返す
+            {"text", "sender", "sender_id", "sender_type", "group_id"}
 
         内部では短い間隔でポーリングするため Ctrl+C で中断でき、
         受信スレッドが終了している場合は例外で知らせる。
@@ -744,15 +900,22 @@ class ChannelWorks:
             with self._lock:
                 q = self._room_inboxes.setdefault(gid, queue.Queue(maxsize=1000))
 
+        def _result(item: Dict[str, Any]) -> Any:
+            return item if with_sender else item["text"]
+
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            # 受信スレッドが死んでいたら、永久に待たずに知らせる
-            if not self._is_running():
+            # メッセージを受け取る channel スレッドが死んでいたら、永久に待たずに知らせる。
+            # (account スレッドは受信に関係ないので、生きていても判定には使わない)
+            if not self._channel_alive():
                 # 死ぬ直前に届いた分があれば先に返す
                 try:
-                    return q.get_nowait()
+                    return _result(q.get_nowait())
                 except queue.Empty:
-                    raise RuntimeError("受信スレッドが停止しています。start() で再開してください。")
+                    raise RuntimeError(
+                        "メッセージ受信スレッド(channel)が停止しています。"
+                        "stop() してから start() で再開してください。"
+                    )
 
             if deadline is None:
                 wait_for = 0.5
@@ -763,7 +926,7 @@ class ChannelWorks:
                 wait_for = min(0.5, remaining)
 
             try:
-                return q.get(timeout=wait_for)
+                return _result(q.get(timeout=wait_for))
             except queue.Empty:
                 continue
 
@@ -801,6 +964,11 @@ class ChannelWorks:
 
     def _is_running(self) -> bool:
         return any(t is not None and t.is_alive() for t in (self._channel_thread, self._account_thread))
+
+    def _channel_alive(self) -> bool:
+        """メッセージを受け取る channel スレッドが生きているか。"""
+        t = self._channel_thread
+        return t is not None and t.is_alive()
 
     # --- WebSocket 接続 -----------------------------------------------
     def _open_channel_ws(self, session_token: str) -> _LoggingWS:
@@ -916,7 +1084,7 @@ class ChannelWorks:
         return None
 
     @staticmethod
-    def _put_limited(q: "queue.Queue[str]", item: str) -> None:
+    def _put_limited(q: "queue.Queue[Dict[str, Any]]", item: Dict[str, Any]) -> None:
         if q.full():  # 溜まりすぎたら古いものを捨てる
             try:
                 q.get_nowait()
@@ -949,15 +1117,29 @@ class ChannelWorks:
 
         text = (wrapper.get("entity") or {}).get("plainText")
         if text:
+            sender_info = self.get_sender_info(wrapper)
+            sender = sender_info["name"] or "不明"
+
             self.last_message = text
+            self.last_sender = sender
+            self.last_sender_id = sender_info["id"]
+            self.last_sender_type = sender_info["type"]
             self.last_wrapper = wrapper
-            self._put_limited(self._inbox, text)  # 全部屋共通
+
+            item = {
+                "text": text,
+                "sender": sender,
+                "sender_id": sender_info["id"],
+                "sender_type": sender_info["type"],
+                "group_id": gid,
+            }
+            self._put_limited(self._inbox, item)  # 全部屋共通
             if gid is not None:                    # 部屋が特定できたときだけ部屋別へ
                 with self._lock:
                     room_q = self._room_inboxes.setdefault(gid, queue.Queue(maxsize=1000))
-                self._put_limited(room_q, text)
+                self._put_limited(room_q, item)
             if self.show_incoming:
-                print(f'受信 [{gid or "?"}] : "{text}"', flush=True)
+                print(f'受信 [{gid or "?"}] {sender} : "{text}"', flush=True)
 
         if self.on_push is not None:
             try:
@@ -1107,7 +1289,7 @@ class ChannelWorks:
 
 
 # ---------------------------------------------------------------------------
-# サンプル: "!ping" を受信したら "pong" を返す
+# サンプル: "!ping" を受信したら "pong" を返す (送信者名つき)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     BOT_MARK = "[bot] "  # 自分の返信に反応しないための目印
@@ -1124,8 +1306,9 @@ if __name__ == "__main__":
         text = (wrapper.get("entity") or {}).get("plainText")
         if not text or text.startswith(BOT_MARK):
             return
+        sender = cw.get_sender(wrapper)
         if text.strip() == "!ping":
-            cw.send(BOT_MARK + "pong")
+            cw.send(f"{BOT_MARK}pong ({sender} さんへ)")
 
     cw.on_push = on_push
     cw.start()  # login + 自動touch + 受信 を一括開始

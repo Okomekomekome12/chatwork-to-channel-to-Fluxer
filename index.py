@@ -1,47 +1,48 @@
-from flask import Flask , jsonify
-from channel_msg import ChannelMessenger
-from channel_auth import ChannelWorksClient
 import chatwork
 import threading
+import time
+from flask import Flask , request , jsonify
+import os
+import fluxer
 
+SECRET_TOKEN = None
+TOKEN = os.environ.get("FLUXER_BOT_TOKEN")
 app = Flask(__name__)
+CW_API_TOKEN = os.environ.get("chatwork_api_token")
+bot = fluxer.Bot(command_prefix="!", intents=fluxer.Intents.default())
 
-CW_API_TOKEN = ""
-client = ChannelWorksClient(
-    room_id="",
-    email="",
-    password="",
-    log_level=ChannelWorksClient.LOG_DEBUG
-)
-client.login()
-client.start_auto_touch()
-def on_push(wrapper):
-    entity = wrapper.get("entity") or {}
-    print("受信:", entity.get("plainText"))
+cw = chatwork.setup(452904052,CW_API_TOKEN)
+if not TOKEN:
+    print("API未設定")
+    exit()
 
-
-messager = ChannelMessenger(
-    client=client,
-    channel_slug="",
-    group_path="/grops/114514",
-    log_level=ChannelMessenger.LOG_DEBUG,
-    on_push=on_push
-)
-messager.start()
-@app.route("/", methods=["GET"])
-def root():
-    return "Ok" , 200
-
-@app.route("/webhook", methods=["POST"])
+@app.route("/cw_webhook")
 def webhook():
+    signature = request.headers.get("X-ChatWorkWebhookSignature")
+    if not chatwork.webhook_verify_signature(request.data, signature, SECRET_TOKEN): # type: ignore
+        return "invalid signature", 403
+    ip         = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    data       = request.json
+    room_id    = chatwork.webhook_get_roomid(data)
+    body       = chatwork.webhook_get_message(data)
+    account_id = chatwork.webhook_get_account_id(data)
+    message_id = chatwork.webhook_get_message_id(data)
+
+    return jsonify({"status": "ok"}), 200
+    
+def chatwork_to_channel():
+    while True:
+        msg = cw.get_new_messages
+        time.sleep(1)
+        print(msg)
+        if msg:
+            message_cw = msg["body"]
+            account_name = msg["account_name"]
 
 
-    room
-    room_id    = chatwork.webhook_get_roomid
-    message_id = chatwork.webhook_get_message_id
-    body       = chatwork.webhook_get_message
-    account_id = chatwork.webhook_get_account_id
-
-    cw = chatwork.setup(room_id,CW_API_TOKEN)
-
-    return jsonify({"status" : "ok"}) , 200
+@bot.event
+async def on_message(message):
+        print(f"[{message.channel_id}] {message.author.username}: {message.content}")
+        if message.content == "/live?":
+             await message.reply("生きてるお")
+bot.run(TOKEN)
