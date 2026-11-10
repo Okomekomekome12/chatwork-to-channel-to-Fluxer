@@ -11,7 +11,7 @@ app = Flask(__name__)
 CW_API_TOKEN = os.environ.get("chatwork_api_token")
 bot = fluxer.Bot(command_prefix="!", intents=fluxer.Intents.default())
 
-cw = chatwork.setup(452904052,CW_API_TOKEN)
+cw_ITRSA = chatwork.setup(452904052,CW_API_TOKEN)
 if not TOKEN:
     print("API未設定")
     exit()
@@ -28,21 +28,17 @@ def webhook():
     account_id = chatwork.webhook_get_account_id(data)
     message_id = chatwork.webhook_get_message_id(data)
 
+
+    
     return jsonify({"status": "ok"}), 200
     
-def chatwork_to_channel():
-    while True:
-        msg = cw.get_new_messages
-        time.sleep(1)
-        print(msg)
-        if msg:
-            message_cw = msg["body"]
-            account_name = msg["account_name"]
 
 
 @bot.event
 async def on_message(message):
         print(f"[{message.channel_id}] {message.author.username}: {message.content}")
         if message.content == "/live?":
-             await message.reply("生きてるお")
+            await message.reply("生きてるお")
+        else:
+            cw_ITRSA.messagesend(f"{message.author.username} : {message.content}")    
 bot.run(TOKEN)
