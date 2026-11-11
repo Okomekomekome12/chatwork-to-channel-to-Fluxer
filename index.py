@@ -53,13 +53,13 @@ async def on_message(message):
         if str(message.channel_id) in ALLOWED_CHANNEL_IDS:
             if message.author.global_name:
                 FLUX_message = message.content
-                FLUX_message.replace("[toall]","")
-                cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
+                edit_message_flux = FLUX_message.replace("[toall]","")
+                cw_ITRSA.messagesend(f"{message.author.global_name} : {edit_message_flux}") 
 
             else:
                 FLUX_message = message.content
-                FLUX_message.replace("[toall]","")
-                cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
+                edit_message_flux = FLUX_message.replace("[toall]","")
+                cw_ITRSA.messagesend(f"{message.author.username} : {edit_message_flux}") 
 
 
         if message.content == "/live?":
