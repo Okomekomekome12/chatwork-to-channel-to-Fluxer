@@ -6,6 +6,8 @@ import os
 import fluxer
 import wr
 
+print("start")
+
 ALLOWED_CHANNEL_IDS = {
     "1569680575495680017",
     "1565706890367729664",
@@ -50,9 +52,13 @@ async def on_message(message):
 
         if str(message.channel_id) in ALLOWED_CHANNEL_IDS:
             if message.author.global_name:
+                FLUX_message = message.content
+                FLUX_message.replase("[toall]","")
                 cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
 
             else:
+                FLUX_message = message.content
+                FLUX_message.replase("[toall]","")
                 cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
 
 
