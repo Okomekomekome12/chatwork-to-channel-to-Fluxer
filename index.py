@@ -53,7 +53,7 @@ async def on_message(message):
         if str(message.channel_id) in ALLOWED_CHANNEL_IDS:
             if message.author.global_name:
                 FLUX_message = message.content
-                FLUX_message.replase("[toall]","")
+                FLUX_message.replace("[toall]","")
                 cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
 
             else:
