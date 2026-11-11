@@ -4,6 +4,7 @@ import time
 from flask import Flask , request , jsonify
 import os
 import fluxer
+import wr
 
 SECRET_TOKEN = None
 TOKEN = os.environ.get("FLUXER_BOT_TOKEN")
@@ -39,6 +40,9 @@ async def on_message(message):
         print(f"[{message.channel_id}] {message.author.username}: {message.content}")
         if message.content == "/live?":
             await message.reply("生きてるお")
+        if message.content == "おみくじ":
+            kekka = wr.choice({"大吉(3.028%)": 500, "中吉(6.057%)" : 1000, "吉(30.283%)": 5000, "小吉(36.339%)" : 6000 , "凶(18.170%)": 3000 ,"大凶(6.057%)" : 1000, "超大吉(0.06%)\nおめでとう🎉" : 10 , "しあ吉(0.006%)\n？？？？？？？？？？？？？？？？？？？？\nすげぇな" : 1})
+            await message.reply(kekka)
         else:
             cw_ITRSA.messagesend(f"{message.author.username} : {message.content}")    
 bot.run(TOKEN)
