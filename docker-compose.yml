@@ -1,11 +1,33 @@
 services:
-  bot:
-    build: .
-    container_name: fluxer_bot
-    env_file: .env
+  bridge:
+    image: python:3.12-slim
+    container_name: cw_fluxer_bridge
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    environment:
+      - PORT=3140
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && python bridge.py"
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    # ポートは公開しない(Caddy から bridge:3140 で届く)
+
+  caddy:
+    image: caddy:2
+    container_name: cw_fluxer_caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bridge
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
