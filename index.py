@@ -11,6 +11,7 @@ print("start")
 ALLOWED_CHANNEL_IDS = {
     "1569680575495680017",
     "1565706890367729664",
+    "1569680575495680016",
 }
 
 
@@ -34,7 +35,7 @@ def webhook():
     signature = request.headers.get("X-ChatWorkWebhookSignature")
     if not chatwork.webhook_verify_signature(request.data, signature, SECRET_TOKEN): # type: ignore
         return "invalid signature", 403
-    ip         = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    ip         = request.headers.get('X-Forwarded-For').split(',')[0].strip() # type: ignore
     data       = request.json
     room_id    = chatwork.webhook_get_roomid(data)
     body       = chatwork.webhook_get_message(data)
