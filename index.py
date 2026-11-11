@@ -42,6 +42,7 @@ def webhook():
     body       = chatwork.webhook_get_message(data)
     account_id = chatwork.webhook_get_account_id(data)
     message_id = chatwork.webhook_get_message_id(data)
+    print(body)
     if not body:
         return jsonify({"status": "ok"}), 200
     if body.count("[info]") >= 1:
