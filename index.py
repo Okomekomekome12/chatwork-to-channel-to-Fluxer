@@ -22,7 +22,7 @@ if not TOKEN:
     exit()
 
 def fluxer_to_chatwork():
-     
+    return None
 
 @app.route("/cw_webhook")
 def webhook():
