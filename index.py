@@ -24,7 +24,7 @@ CW_API_TOKEN = os.environ.get("chatwork_api_token")
 bot          = fluxer.Bot(command_prefix="!", intents=fluxer.Intents.default())
 Fluxer_webhook_url = os.environ.get("fluxer_webhook_url")
 
-cw_ITRSA     = chatwork.setup(452904052,CW_API_TOKEN)
+cw_ITRSA     = chatwork.setup(453039746,CW_API_TOKEN)
 if not TOKEN:
     print("API未設定")
     exit()
