@@ -6,7 +6,10 @@ import os
 import fluxer
 import wr
 
-ALLOWED_CHANNEL_ID = "1569680575495680017"
+ALLOWED_CHANNEL_IDS = {
+    "1569680575495680017",
+    "1565706890367729664",
+}
 
 
 
@@ -44,14 +47,19 @@ def webhook():
 @bot.event
 async def on_message(message):
         print(f"[{message.channel_id}] {message.author.username}: {message.content}")
+
+        if str(message.channel_id) in ALLOWED_CHANNEL_IDS:
+            if message.author.global_name:
+                cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
+
+            else:
+                cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
+
+
         if message.content == "/live?":
             await message.reply("生きてるお")
         if message.content == "おみくじ":
             kekka = wr.choice({"大吉": 500, "中吉" : 1000, "吉": 5000, "小吉" : 6000 , "凶": 3000 ,"大凶" : 1000, "超大吉(0.06%)\nおめでとう🎉" : 10 , "しあ吉(0.006%)\n？？？？？？？？？？？？？？？？？？？？\nすげぇな" : 1})
             await message.reply(kekka)
-        else:
-            if message.author.global_name:
-                cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
-            else:
-                cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
+
 bot.run(TOKEN)
