@@ -58,7 +58,7 @@ async def on_message(message):
 
             else:
                 FLUX_message = message.content
-                FLUX_message.replase("[toall]","")
+                FLUX_message.replace("[toall]","")
                 cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
 
 
