@@ -6,6 +6,10 @@ import os
 import fluxer
 import wr
 
+ALLOWED_CHANNEL_ID = "1569680575495680017"
+
+
+
 SECRET_TOKEN = None
 TOKEN = os.environ.get("FLUXER_BOT_TOKEN")
 app = Flask(__name__)
@@ -16,6 +20,9 @@ cw_ITRSA = chatwork.setup(452904052,CW_API_TOKEN)
 if not TOKEN:
     print("API未設定")
     exit()
+
+def fluxer_to_chatwork():
+     
 
 @app.route("/cw_webhook")
 def webhook():
@@ -34,7 +41,6 @@ def webhook():
     return jsonify({"status": "ok"}), 200
     
 
-
 @bot.event
 async def on_message(message):
         print(f"[{message.channel_id}] {message.author.username}: {message.content}")
@@ -44,5 +50,8 @@ async def on_message(message):
             kekka = wr.choice({"大吉": 500, "中吉" : 1000, "吉": 5000, "小吉" : 6000 , "凶": 3000 ,"大凶" : 1000, "超大吉(0.06%)\nおめでとう🎉" : 10 , "しあ吉(0.006%)\n？？？？？？？？？？？？？？？？？？？？\nすげぇな" : 1})
             await message.reply(kekka)
         else:
-            cw_ITRSA.messagesend(f"{message.author.username} : {message.content}")    
+            if message.author.global_name:
+                cw_ITRSA.messagesend(f"{message.author.global_name} : {message.content}") 
+            else:
+                cw_ITRSA.messagesend(f"{message.author.username} : {message.content}") 
 bot.run(TOKEN)
