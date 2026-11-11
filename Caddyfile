@@ -1,0 +1,11 @@
+kokokokomai.chatwork.to.fluxer.hospitaldelninodif.gob.mx {
+    # Chatwork の Webhook だけ通す
+    handle /cw_webhook {
+        reverse_proxy bridge:3140
+    }
+
+    # それ以外は404
+    handle {
+        respond "not found" 404
+    }
+}

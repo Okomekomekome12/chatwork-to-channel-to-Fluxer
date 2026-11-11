@@ -394,19 +394,26 @@ class setup:
 
         return False 
     def get_user_name(self, account_id):
-        """指定した account_id のユーザー名を返す(ルームのメンバーから検索)。
+        """指定した account_id のユーザー名を返す。
+        ルームのメンバー → コンタクト一覧の順に検索する。
         見つからない場合・取得失敗時は None を返す。
         """
-        url = f"https://api.chatwork.com/v2/rooms/{self.room_id}/members"
         headers = {"x-chatworktoken": self.api_token}
 
+        # 1. ルームのメンバーから探す
+        url = f"https://api.chatwork.com/v2/rooms/{self.room_id}/members"
         response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            return None
+        if response.status_code == 200 and response.text.strip():
+            for member in response.json():
+                if str(member["account_id"]) == str(account_id):
+                    return member["name"]
 
-        for member in response.json():
-            if str(member["account_id"]) == str(account_id):
-                return member["name"]
+        # 2. 見つからなければコンタクト一覧から探す
+        response = requests.get("https://api.chatwork.com/v2/contacts", headers=headers)
+        if response.status_code == 200 and response.text.strip():
+            for contact in response.json():
+                if str(contact["account_id"]) == str(account_id):
+                    return contact["name"]
 
         return None
 
