@@ -9,7 +9,7 @@ services:
       - .env
     environment:
       - PORT=3140
-    command: sh -c "pip install --no-cache-dir -r requirements.txt && python bridge.py"
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && python index.py"
     restart: unless-stopped
     # ポートは公開しない(Caddy から bridge:3140 で届く)
 
