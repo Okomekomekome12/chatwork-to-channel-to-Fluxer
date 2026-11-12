@@ -17,6 +17,7 @@
                      msg = cw.get_new_messages → msg["body"] / msg["account_name"]
     get_message_link 最新のメッセージのリンクを取得
     get_user_name アカウントIDからユーザー名を取得
+    get_sender_name メッセージIDから送信者名を取得(Webhook用・退室済みの人も取れる)
     create_task タスクを作成する
     delete_task タスクを削除する
     webhook_get_message()  webhookからメッセージ本文を取得
@@ -416,6 +417,20 @@ class setup:
                     return contact["name"]
 
         return None
+    def get_sender_name(self, message_id, room_id=None):
+        """メッセージIDから送信者名を取得する(Webhook用)。
+        メッセージ自体に送信者情報が入っているので、既にルームを抜けた人や
+        コンタクトにいない人でも名前が取れる。失敗時は None を返す。
+        """
+        room_id = room_id or self.room_id
+        url = f"https://api.chatwork.com/v2/rooms/{room_id}/messages/{message_id}"
+        headers = {"x-chatworktoken": self.api_token}
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200 or not response.text.strip():
+            return None
+
+        return response.json().get("account", {}).get("name")
 
 def auto_accept_contacts(api_token):
     """コンタクト申請を全て自動承認する"""
