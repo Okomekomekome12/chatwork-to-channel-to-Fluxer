@@ -46,10 +46,12 @@ def webhook():
     if body.count("[info]") >= 1:
         return jsonify({"status": "ok"}), 200
     
-    username   = cw_ITRSA.get_sender_name(account_id)
-
-
-        
+    username = (
+        cw_ITRSA.get_sender_name(message_id, room_id)
+        or cw_ITRSA.get_user_name(account_id)
+        or account_id
+    )
+            
     message = body.replace("@everyone" , "")
     message = message.replace("@here" , "")
     requests.post(str(Fluxer_webhook_url), json={"content": f"> [!NOTE]\n> #bot {username} : {message}", "username": "カレハ"})
