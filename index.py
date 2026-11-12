@@ -62,7 +62,7 @@ def webhook():
 @bot.event
 async def on_message(message):
         print(f"[{message.channel_id}] {message.author.username}: {message.content}")
-        if message.content.count("#bot") >= 1:
+        if message.content.count("[!NOTE]") >= 1:
             pass
         elif str(message.channel_id) in ALLOWED_CHANNEL_IDS:
             if message.author.global_name:
