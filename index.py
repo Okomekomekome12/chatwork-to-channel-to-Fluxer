@@ -52,7 +52,7 @@ def webhook():
         
     message = body.replace("@everyone" , "")
     message = message.replace("@here" , "")
-    requests.post(str(Fluxer_webhook_url), json={"content": f"#bot {username} : {message}", "username": "カレハ"})
+    requests.post(str(Fluxer_webhook_url), json={"content": f"> [!NOTE]\n> #bot {username} : {message}", "username": "カレハ"})
     
     return jsonify({"status": "ok"}), 200
     
