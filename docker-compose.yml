@@ -12,5 +12,5 @@ services:
       - PYTHONUNBUFFERED=1
     command: sh -c "pip install --no-cache-dir -r requirements.txt && python index.py"
     restart: unless-stopped
-    # ポートは公開しない(既存の caddy から cw_fluxer_bridge:3140 で届く)
-    # caddy との接続は docker network connect で行う(README の手順参照)
+    # ( caddy  cw_fluxer_bridge:3140 )
+    # caddy  docker network connect (README )
