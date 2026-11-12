@@ -46,7 +46,7 @@ def webhook():
     if body.count("[info]") >= 1:
         return jsonify({"status": "ok"}), 200
     
-    username   = cw_ITRSA.get_user_name(account_id)
+    username   = cw_ITRSA.get_sender_name(account_id)
 
 
         
